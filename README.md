@@ -6,9 +6,9 @@
 ### Running directly in the command line
 
 ```bash
-./consumer.sh -t 00:01:00 -w 8 -i 6 -f mylogdata.txt
+./consumer.sh -t 00:01:00 -w 8 -i 6 -f mylogdata.txt -c /home/me/.aws/config
 ```
-(Retrieves the past _1_ minute of data with _8_ workers, _6_ second intervals on writing incoming results to the file, _mylogdata.txt_)
+(Using the AWS config file, script retrieves from all accounts in config file the past _1_ minute of data with _8_ workers, _6_ second intervals on writing incoming results to the file, _mylogdata.txt_)
 
 ### Running in Splunk
  - Copy files to {SPLUNK_HOME}/etc/apps/scripts/bin/flowlogs/
@@ -38,4 +38,4 @@ Here is a breakdown of steps:
 
 The reason for using multiprocessing is to capitalize on network I/O. The botocore module will handle the rate limit exceptions/retries, but using too many workers will result in longer completion times as work will be re-queued, therefore extending the length of time to complete.
 
-The script currently assumes 1 AWS account and execution from an AWS instance with an IAM profile having permissions to access CloudWatch Logs. A future improvement is to make this script multi-AWS account aware and also to run outside of AWS if necessary.
+Multi-account processing iterates over the profiles found within the configuration file. One account is handled at a time.
