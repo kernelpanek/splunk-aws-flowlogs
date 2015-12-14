@@ -13,9 +13,17 @@ import multiprocessing as mp
 import pickle
 
 def getAllLogGroups(conn):
+    """
+    Retrieves all log groups from AWS flowlogs connection.
+    A log group can be a collection of streams per VPC if AWS is configured that way.
+    Each stream will be the data per ENI.
+    """
     return conn.describe_log_groups()['logGroups']
 
 def getAllLogStreams(conn):
+    """
+    Retrieves all streams for all log groups.
+    """
     all_streams = []
     for grp in getAllLogGroups(conn):
         grp_streams = conn.describe_log_streams(logGroupName=grp.get('logGroupName'))
@@ -27,13 +35,18 @@ def getAllLogStreams(conn):
                 grp_streams = conn.describe_log_streams(logGroupName=grp.get('logGroupName'), nextToken=next_token)
             except Exception as ex:
                 logger.error(ex)
-                sleep(randint(100,500) / 1000)
+                sleep(randint(10,100) / 1000)
                 grp_streams = conn.describe_log_streams(logGroupName=grp.get('logGroupName'), nextToken=next_token)
 
             all_streams.append([(grp.get('logGroupName'), stream) for stream in grp_streams.get('logStreams')])
     return list(chain(all_streams))
 
 def getAllEvents(workload, queue, conn):
+    """
+    Retrieves all events from API with workload object data.
+    If exception occurs, workload object is placed back on
+    the pending queue.
+    """
     log_group_name = workload.get('log_group_name')
     log_stream_name = workload.get('log_stream_name')
     start_time = workload.get('start_time')
@@ -41,7 +54,7 @@ def getAllEvents(workload, queue, conn):
 
     raw_events = []
     back_token_tracker = None
-    sleep(randint(100,500) / 1000)
+    sleep(randint(10,100) / 1000)
     logger.debug("log_group_name: {0}; log_stream_name: {1}; start_time: {2}; next_token: {3};".format(log_group_name, log_stream_name, start_time, next_token))
     if start_time is None:
         if next_token is None:
@@ -62,6 +75,9 @@ def getAllEvents(workload, queue, conn):
     return raw_events
 
 def processData(completed_work_queue, pending_work_queue, interval, output_file):
+    """
+    Repeatedly checks the completed_work_queue for data to write to the output_file.
+    """
     try:
         strikes = 0
         if output_file is not None: sys.stdout = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), output_file), 'a')
@@ -78,15 +94,19 @@ def processData(completed_work_queue, pending_work_queue, interval, output_file)
     except Exception as ex:
         logger.error(ex)
     logger.info("data writer terminating.")
+    sys.exit(0)
 
 def workOnQueue(pending_queue, complete_queue, conn):
+    """
+    Repeatedly checks the pending_queue for work, performs the work,
+    places finished work on complete_queue.
+    """
     isFinished = False
     while not pending_queue.empty() or not isFinished:
         try:
             obj = pending_queue.get(timeout=20)
             all_events = getAllEvents(obj, pending_queue, conn)
             complete_queue.put(all_events)
-            pending_queue.task_done()
         except:
             if 'queue.empty' in str(sys.exc_info()[0]).lower():
                 pass
@@ -100,13 +120,15 @@ def workOnQueue(pending_queue, complete_queue, conn):
     logger.info("worker process exiting.")
 
 def flushQueue(queue):
-    while not queue.empty():
-        log = queue.get(timeout=20)
-        for log_segment in log:
-            log_group = log_segment[0]['log_group_name']
-            [sys.stdout.write("{0} {1} {2}\n".format(event['timestamp'], event['message'], log_group)) for event in log_segment[1]]
-        queue.task_done()
-    logger.info('completed work flushed')
+    try:
+        while not queue.empty():
+            log = queue.get(timeout=21)
+            for log_segment in log:
+                log_group = log_segment[0]['log_group_name']
+                [sys.stdout.write("{0} {1} {2}\n".format(event['timestamp'], event['message'], log_group)) for event in log_segment[1]]
+        logger.info('completed work flushed')
+    except Exception as ex:
+        logger.error(ex)
 
 def parse_timedelta(timespan):
     t = datetime.strptime(timespan,"%H:%M:%S")
@@ -132,6 +154,12 @@ class ProcManager:
 
 
     def initializePendingQueueWorkload(self, queue, conn):
+        """
+        Takes in a multiprocessing queue object and a AWS flowlogs connection object
+        Retrieves all log streams from AWS flowlogs connection and places them into the
+        queue object provided with a start time and an empty next_token. This is the
+        start of the pending work queue.
+        """
         for streams in getAllLogStreams(conn):
             for stream in streams:
                 startTimestamp = 0
@@ -150,6 +178,18 @@ class ProcManager:
         logger.info("pending_work_queue: {0};".format(queue.qsize()))
 
     def start(self):
+        """
+        This process kicks off the beginning of the process.
+        Initializes the pending work queue.
+        Generates a list of process workers.
+        Starts each process worker.
+        Starts the saver (log writer) process.
+        After this call, all processes should begin to pull
+        work off the pending queue, work on the item, place
+        results in the completed queue, and generate any
+        new pending work on the pending queue if there is
+        a next_token.
+        """
         self.initializePendingQueueWorkload(self.pending_work_queue, self.logconn)
         self.workers = [mp.Process(target=workOnQueue, args=(self.pending_work_queue, self.completed_work_queue, self.logconn,))
                         for i in range(self.args.worker_count)]
@@ -163,11 +203,13 @@ class ProcManager:
         logger.info("data writer initialized: PID: {0}".format(self.saver.pid))
 
     def join(self):
+        """ Link these processes up to the main process lest ye processes die..."""
         for w in self.workers:
             w.join()
         self.saver.join()
 
     def terminate(self):
+        """ Straightforward... once all processes return from doing all of the work, terminate them."""
         for w in self.workers:
             logger.info("worker terminating: PID: {0}".format(w.pid))
             w.terminate()
